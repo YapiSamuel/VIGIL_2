@@ -256,9 +256,9 @@ def _unsupported_report(ingest) -> dict:
         },
         "verdict": {
             "band": "SAFE", "score": 0, "escalate": False, "confidence": "low",
-            "confidence_basis": "file type is out of scope for v1.0",
+            "confidence_basis": "file type is out of scope for this release",
             "explanation": (
-                f"VIGIL v1.0 does not analyze {ingest.detected_type} files. "
+                f"VIGIL does not analyze {ingest.detected_type} files. "
                 "Scope is .sh/.ps1/.py scripts and archives of them. "
                 "Windows PE analysis is explicitly out of scope — shallow "
                 "header reading is weak signal and dynamic analysis is not "

@@ -83,7 +83,7 @@ URLhaus (abuse.ch) needs no key and works out of the box.
 
 ## Safety model
 
-- **Nothing is ever executed.** v1.0 is static analysis only. Every operation
+- **Nothing is ever executed.** VIGIL is static analysis only. Every operation
   is a pure text or byte transform. VIGIL does not detonate; it tells you
   whether you should.
 - **Only the `intel/` package makes network calls.** Every other module is

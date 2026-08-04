@@ -76,7 +76,7 @@ files, never logged, and never written into reports or error messages.
 
 ## Out of scope (by design)
 
-These are not defended against because they are **not VIGIL's job** in v1.0,
+These are not defended against because they are **not VIGIL's job** in this release,
 and pretending otherwise would give false confidence:
 
 - **Runtime-only obfuscation, execution-time XOR/encryption keys, and

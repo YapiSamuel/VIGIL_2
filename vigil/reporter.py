@@ -18,7 +18,7 @@ from typing import Optional
 
 from .deobfuscator import Layer, flatten
 
-VIGIL_VERSION = "1.0.0"
+VIGIL_VERSION = "2.0.0"
 
 # --- ANSI helpers (degrade to plain text when color is off) ---------------
 
