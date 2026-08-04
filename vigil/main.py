@@ -1,0 +1,428 @@
+"""VIGIL command-line entry point and pipeline orchestration.
+
+Wires the modules into the pipeline described in PROJECT_BRIEF.md:
+
+    file in
+      -> ingestor        validate, type by magic bytes, hash, safe extract
+      -> cache           SQLite by SHA256; skip re-analysis
+      -> deobfuscator    recursive layer unwrapping
+      -> static_analyzer YARA + pattern detection over every layer
+      -> ioc_extractor   IPs/domains/URLs over every layer
+      -> intel clients   VT + AbuseIPDB + URLhaus, parallel, hash-first
+      -> scorer          deterministic risk score
+      -> verdict         plain-English explanation (AI narrates, never judges)
+      -> reporter        terminal summary + JSON
+
+Runs with zero config and no API keys, degrading to local-only analysis.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import sys
+import time
+from dataclasses import dataclass, field
+from typing import Optional
+
+from . import ingestor
+from . import reporter
+from . import scorer
+from . import static_analyzer
+from . import verdict as verdict_mod
+from .cache import Cache
+from .deobfuscator import deobfuscate
+from .intel import IntelConfig, gather
+from .ioc_extractor import extract as extract_iocs
+
+DEFAULT_CACHE_PATH = os.path.join(os.path.expanduser("~"), ".vigil", "cache.db")
+DEFAULT_CONFIG_PATHS = ["config.yaml", os.path.join(
+    os.path.expanduser("~"), ".vigil", "config.yaml")]
+
+READABLE_TYPES = ("script:sh", "script:ps1", "script:py", "text")
+
+
+# --- configuration --------------------------------------------------------
+
+@dataclass
+class Config:
+    cache_path: str = DEFAULT_CACHE_PATH
+    cache_ttl_hours: int = 24
+    use_cache: bool = True
+    enable_vt: bool = True
+    enable_abuseipdb: bool = True
+    enable_urlhaus: bool = True
+    enable_intel: bool = True
+    enable_ai: bool = True
+    ai_model: str = verdict_mod.DEFAULT_MODEL
+    enable_yara: bool = True
+    yara_rules_dir: Optional[str] = None
+    allow_upload: bool = False
+    color: bool = True
+    notes: list[str] = field(default_factory=list)
+
+
+def load_config(path: Optional[str] = None) -> Config:
+    """Load config from YAML if available. Secrets are never read from here —
+    only from environment variables. Missing config is not an error."""
+    cfg = Config()
+    candidates = [path] if path else DEFAULT_CONFIG_PATHS
+    chosen = next((p for p in candidates if p and os.path.isfile(p)), None)
+    if not chosen:
+        return cfg
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        cfg.notes.append(
+            f"found {chosen} but PyYAML is not installed; using defaults"
+        )
+        return cfg
+    try:
+        with open(chosen, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+    except Exception as exc:
+        cfg.notes.append(f"could not parse {chosen}: {exc}; using defaults")
+        return cfg
+
+    cache = data.get("cache", {}) or {}
+    cfg.cache_path = os.path.expanduser(cache.get("path", cfg.cache_path))
+    cfg.cache_ttl_hours = int(cache.get("ttl_hours", cfg.cache_ttl_hours))
+
+    intel = data.get("intel", {}) or {}
+    cfg.enable_vt = bool(intel.get("enable_virustotal", cfg.enable_vt))
+    cfg.enable_abuseipdb = bool(intel.get("enable_abuseipdb", cfg.enable_abuseipdb))
+    cfg.enable_urlhaus = bool(intel.get("enable_urlhaus", cfg.enable_urlhaus))
+
+    ai = data.get("ai", {}) or {}
+    cfg.enable_ai = bool(ai.get("enable", cfg.enable_ai))
+    cfg.ai_model = str(ai.get("model", cfg.ai_model))
+
+    ycfg = data.get("yara", {}) or {}
+    cfg.enable_yara = bool(ycfg.get("enable", cfg.enable_yara))
+    if ycfg.get("rules_dir"):
+        cfg.yara_rules_dir = os.path.expanduser(ycfg["rules_dir"])
+
+    return cfg
+
+
+# --- core analysis --------------------------------------------------------
+
+def _analyze_blob(ingest_like, text: str, config: Config,
+                  vt_limiter=None, cache: Optional[Cache] = None,
+                  cache_hit: bool = False) -> dict:
+    """Run deobfuscate -> static -> ioc -> intel -> score -> verdict ->
+    report for one text blob and its file metadata."""
+    start = time.time()
+
+    root = deobfuscate(text)
+    analysis = static_analyzer.analyze(
+        root, rules_dir=config.yara_rules_dir, use_yara=config.enable_yara)
+    iocs = extract_iocs(root)
+
+    if config.enable_intel:
+        intel_cfg = IntelConfig(
+            enable_vt=config.enable_vt,
+            enable_abuseipdb=config.enable_abuseipdb,
+            enable_urlhaus=config.enable_urlhaus,
+            allow_upload=config.allow_upload,
+        )
+        intel = gather(ingest_like.sha256, iocs, intel_cfg, vt_limiter=vt_limiter)
+    else:
+        from .intel import IntelBundle
+        intel = IntelBundle(notes=["intel lookups disabled by flag"])
+
+    depth = reporter.max_depth(root)
+    the_score = scorer.score(analysis.findings, iocs, depth, intel.results)
+    the_verdict = verdict_mod.explain(
+        the_score, findings=analysis.findings, iocs=iocs,
+        intel_results=intel.results, model=config.ai_model,
+        use_ai=config.enable_ai)
+
+    elapsed = time.time() - start
+    return reporter.to_dict(
+        ingest=ingest_like, layer_root=root, analysis=analysis, iocs=iocs,
+        intel=intel, score=the_score, verdict=the_verdict,
+        elapsed_seconds=elapsed, cache_hit=cache_hit)
+
+
+def _read_text(path: str) -> str:
+    with open(path, "rb") as fh:
+        data = fh.read()
+    return data.decode("utf-8", errors="replace")
+
+
+def run_scan(path: str, config: Config) -> dict:
+    """Full pipeline for one input path. Returns a report dict (for archives,
+    a wrapper with per-member reports)."""
+    from .intel.base import RateLimiter
+    vt_limiter = RateLimiter(min_interval=15.0)
+
+    ingest = ingestor.ingest(path, extract=True)
+
+    cache: Optional[Cache] = None
+    if config.use_cache:
+        os.makedirs(os.path.dirname(config.cache_path) or ".", exist_ok=True)
+        cache = Cache(config.cache_path, ttl_seconds=config.cache_ttl_hours * 3600)
+        cached = cache.get(ingest.sha256)
+        if cached is not None:
+            cached["cache_hit"] = True
+            cache.close()
+            return cached
+
+    if ingest.is_archive:
+        report = _scan_archive(ingest, config, vt_limiter, cache)
+    else:
+        if ingest.detected_type not in READABLE_TYPES:
+            # Unsupported type (e.g. a PE): honest refusal, not a crash.
+            report = _unsupported_report(ingest)
+        else:
+            text = _read_text(ingest.path)
+            report = _analyze_blob(ingest, text, config, vt_limiter, cache)
+
+    if cache is not None:
+        cache.put(ingest.sha256, report)
+        cache.close()
+    return report
+
+
+def _scan_archive(ingest, config: Config, vt_limiter, cache) -> dict:
+    member_reports = []
+    for member in ingest.members:
+        if member.detected_type not in READABLE_TYPES:
+            continue
+        try:
+            text = _read_text(member.path)
+        except OSError:
+            continue
+        md5, sha1, sha256 = ingestor.hash_file(member.path)
+        member_ingest = ingestor.IngestResult(
+            path=member.path, original_path=f"{ingest.original_path}!{member.name}",
+            detected_type=member.detected_type, size=member.size,
+            md5=md5, sha1=sha1, sha256=sha256,
+        )
+        member_reports.append(_analyze_blob(member_ingest, text, config, vt_limiter))
+
+    if not member_reports:
+        return {
+            "vigil_version": reporter.VIGIL_VERSION,
+            "cache_hit": False,
+            "file": {
+                "path": ingest.original_path,
+                "detected_type": ingest.detected_type,
+                "size": ingest.size, "sha256": ingest.sha256,
+                "is_archive": True, "members": [],
+                "md5": ingest.md5, "sha1": ingest.sha1,
+            },
+            "verdict": {
+                "band": "SAFE", "score": 0, "escalate": False,
+                "confidence": "low",
+                "confidence_basis": "archive contained no analyzable scripts",
+                "explanation": "The archive contained no .sh/.ps1/.py scripts "
+                               "to analyze.",
+                "explanation_source": "template", "attack_ids": [],
+            },
+            "score_breakdown": [], "layers": [], "findings": [], "iocs": [],
+            "intel": [], "notes": ingest.notes + ["no analyzable members found"],
+            "archive_members": [],
+        }
+
+    worst = max(member_reports, key=lambda r: r["verdict"]["score"])
+    wrapper = dict(worst)  # headline verdict = worst member
+    wrapper["file"] = {
+        "path": ingest.original_path,
+        "detected_type": ingest.detected_type,
+        "size": ingest.size, "sha256": ingest.sha256,
+        "md5": ingest.md5, "sha1": ingest.sha1,
+        "is_archive": True,
+        "members": [reporter._serialize(m) for m in ingest.members],
+    }
+    wrapper["archive_members"] = member_reports
+    wrapper["notes"] = list(ingest.notes) + wrapper.get("notes", []) + [
+        f"archive: reporting worst of {len(member_reports)} analyzed member(s)"
+    ]
+    return wrapper
+
+
+def _unsupported_report(ingest) -> dict:
+    return {
+        "vigil_version": reporter.VIGIL_VERSION,
+        "elapsed_seconds": 0.0,
+        "cache_hit": False,
+        "file": {
+            "path": ingest.original_path,
+            "detected_type": ingest.detected_type,
+            "size": ingest.size, "md5": ingest.md5, "sha1": ingest.sha1,
+            "sha256": ingest.sha256, "is_archive": False, "members": [],
+        },
+        "verdict": {
+            "band": "SAFE", "score": 0, "escalate": False, "confidence": "low",
+            "confidence_basis": "file type is out of scope for v1.0",
+            "explanation": (
+                f"VIGIL v1.0 does not analyze {ingest.detected_type} files. "
+                "Scope is .sh/.ps1/.py scripts and archives of them. "
+                "Windows PE analysis is explicitly out of scope — shallow "
+                "header reading is weak signal and dynamic analysis is not "
+                "possible here."),
+            "explanation_source": "template", "attack_ids": [],
+        },
+        "score_breakdown": [], "layers": [], "findings": [], "iocs": [],
+        "intel": [],
+        "notes": ingest.notes + [f"unsupported type: {ingest.detected_type}"],
+    }
+
+
+# --- CLI ------------------------------------------------------------------
+
+_CONFIG_TEMPLATE = """\
+# VIGIL configuration. Secrets are NEVER stored here — set API keys as
+# environment variables instead:
+#   VT_API_KEY, ABUSEIPDB_API_KEY, ANTHROPIC_API_KEY
+
+cache:
+  path: ~/.vigil/cache.db
+  ttl_hours: 24
+
+intel:
+  enable_virustotal: true
+  enable_abuseipdb: true
+  enable_urlhaus: true
+
+ai:
+  enable: true
+  model: claude-sonnet-5
+
+yara:
+  enable: true
+  # rules_dir: rules
+"""
+
+
+def _cmd_setup(args) -> int:
+    target_dir = os.path.join(os.path.expanduser("~"), ".vigil")
+    os.makedirs(target_dir, exist_ok=True)
+    cfg_path = os.path.join(target_dir, "config.yaml")
+    if os.path.exists(cfg_path) and not args.force:
+        print(f"config already exists at {cfg_path} (use --force to overwrite)")
+    else:
+        with open(cfg_path, "w", encoding="utf-8") as fh:
+            fh.write(_CONFIG_TEMPLATE)
+        print(f"wrote config template to {cfg_path}")
+    print("\nOptional API keys (set as environment variables):")
+    for var, what in [
+        ("VT_API_KEY", "VirusTotal hash lookups"),
+        ("ABUSEIPDB_API_KEY", "AbuseIPDB IP reputation"),
+        ("ANTHROPIC_API_KEY", "AI-written verdict explanations"),
+    ]:
+        state = "set" if os.environ.get(var) else "not set"
+        print(f"  {var:<20} {what:<34} [{state}]")
+    print("\nVIGIL runs fully without any of these, degrading to local-only "
+          "analysis.")
+    return 0
+
+
+def _cmd_scan(args) -> int:
+    config = load_config(args.config)
+    if args.no_cache:
+        config.use_cache = False
+    if args.no_intel:
+        config.enable_intel = False
+    if args.no_ai:
+        config.enable_ai = False
+    if args.no_yara:
+        config.enable_yara = False
+    if args.no_color:
+        config.color = False
+    if args.upload:
+        config.allow_upload = True
+
+    if args.upload:
+        # Hard rule 3: an explicit, printed warning before any upload path.
+        sys.stderr.write(
+            "WARNING: --upload will send the FILE ITSELF to VirusTotal. "
+            "Uploaded files become retrievable by VT's paid customers. Do NOT "
+            "upload files containing customer data, credentials, or anything "
+            "your policy forbids sharing.\n")
+        if not args.yes:
+            sys.stderr.write("Proceed? [y/N] ")
+            sys.stderr.flush()
+            answer = sys.stdin.readline().strip().lower()
+            if answer not in ("y", "yes"):
+                sys.stderr.write("aborted; no upload performed.\n")
+                return 2
+
+    try:
+        report = run_scan(args.path, config)
+    except ingestor.IngestError as exc:
+        sys.stderr.write(f"ingest error: {exc}\n")
+        return 2
+    except Exception as exc:  # last-resort guard; a scan should not crash
+        sys.stderr.write(f"unexpected error: {exc}\n")
+        return 3
+
+    for n in config.notes:
+        report.setdefault("notes", []).append(n)
+
+    if args.json:
+        print(reporter.to_json(report))
+    else:
+        unicode_ok = reporter.supports_unicode(sys.stdout)
+        color = config.color and sys.stdout.isatty()
+        rendered = reporter.render_terminal(report, color=color,
+                                            unicode_ok=unicode_ok)
+        # Last-resort guard: if the console still rejects a character, emit an
+        # ASCII-safe version rather than crashing the whole scan on output.
+        try:
+            print(rendered)
+        except UnicodeEncodeError:
+            enc = sys.stdout.encoding or "ascii"
+            sys.stdout.write(rendered.encode(enc, "replace").decode(enc) + "\n")
+
+    # exit code encodes the verdict for scripting: 0 safe, 1 escalate.
+    return 1 if report["verdict"]["escalate"] else 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="vigil",
+        description="Pre-execution malware triage for scripts. Static analysis "
+                    "only — nothing is ever executed.")
+    parser.add_argument("--version", action="version",
+                        version=f"vigil {reporter.VIGIL_VERSION}")
+    sub = parser.add_subparsers(dest="command")
+
+    scan = sub.add_parser("scan", help="analyze a script or archive")
+    scan.add_argument("path", help="path to the file to analyze")
+    scan.add_argument("--json", action="store_true", help="emit JSON report")
+    scan.add_argument("--config", help="path to a config file")
+    scan.add_argument("--no-cache", action="store_true", help="ignore the cache")
+    scan.add_argument("--no-intel", action="store_true",
+                      help="skip all network intel lookups")
+    scan.add_argument("--no-ai", action="store_true",
+                      help="skip AI narration; use deterministic explanation")
+    scan.add_argument("--no-yara", action="store_true", help="skip YARA")
+    scan.add_argument("--no-color", action="store_true", help="disable color")
+    scan.add_argument("--upload", action="store_true",
+                      help="upload the file to VirusTotal (prints a warning)")
+    scan.add_argument("--yes", action="store_true",
+                      help="skip the --upload confirmation prompt")
+    scan.set_defaults(func=_cmd_scan)
+
+    setup = sub.add_parser("setup", help="first-run setup: write a config template")
+    setup.add_argument("--force", action="store_true",
+                       help="overwrite an existing config")
+    setup.set_defaults(func=_cmd_setup)
+
+    return parser
+
+
+def main(argv: Optional[list] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if not getattr(args, "command", None):
+        parser.print_help()
+        return 0
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

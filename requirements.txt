@@ -1,0 +1,11 @@
+# VIGIL runs on the standard library alone (zero-config, local-only mode).
+# Everything below is optional and unlocks additional capability. VIGIL
+# degrades gracefully — with a printed note, never a crash — when any of
+# these is absent.
+
+pytest>=8.0          # tests only
+
+# Optional runtime extras:
+PyYAML>=6.0          # read config.yaml (otherwise built-in defaults are used)
+yara-python>=4.3     # YARA rule matching (otherwise pattern detection only)
+anthropic>=0.40      # AI-written verdict narration (otherwise deterministic)

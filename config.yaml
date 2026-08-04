@@ -1,0 +1,25 @@
+# VIGIL configuration.
+#
+# Secrets are NEVER stored here. Set API keys as environment variables:
+#   VT_API_KEY            VirusTotal hash lookups
+#   ABUSEIPDB_API_KEY     AbuseIPDB IP reputation
+#   ANTHROPIC_API_KEY     AI-written verdict explanations
+#
+# VIGIL runs fully without any of these, degrading to local-only analysis.
+
+cache:
+  path: ~/.vigil/cache.db
+  ttl_hours: 24
+
+intel:
+  enable_virustotal: true
+  enable_abuseipdb: true
+  enable_urlhaus: true
+
+ai:
+  enable: true
+  model: claude-sonnet-5
+
+yara:
+  enable: true
+  # rules_dir: rules   # defaults to the repo's rules/ directory
