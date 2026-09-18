@@ -1,0 +1,21 @@
+VIGIL — Pre-execution malware triage for scripts
+Copyright 2026 Samuel N'Guessan
+
+Licensed under the Apache License, Version 2.0 (the "License").
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+---
+
+VIGIL performs static analysis only. It does not execute, evaluate, or
+import anything derived from the files it analyzes.
+
+This software is provided "AS IS", without warranties or conditions of any
+kind. A verdict of SAFE means no suspicious signals were collected; it is
+not proof that a file is benign. See README.md for documented limitations
+and THREAT_MODEL.md for the adversary model.
+
+Optional third-party services (VirusTotal, AbuseIPDB, URLhaus, Anthropic)
+are governed by their own terms. Use the --offline flag to disable all
+outbound network access.

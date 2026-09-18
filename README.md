@@ -1,5 +1,9 @@
 # VIGIL
 
+[![tests](https://github.com/YapiSamuel/VIGIL_2/actions/workflows/tests.yml/badge.svg)](https://github.com/YapiSamuel/VIGIL_2/actions/workflows/tests.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+
 **Pre-execution malware triage for scripts.** VIGIL answers one question
 fast: *is this script safe to hand off, or should I escalate it now?*
 
@@ -55,7 +59,17 @@ python -m vigil scan suspicious.sh          # local-only, zero config
 python -m vigil scan bundle.tar.gz          # archives are extracted safely
 python -m vigil scan suspicious.ps1 --json  # machine-readable report
 python -m vigil setup                        # write a config template, show key status
+
+# Regulated data (CUI / PHI): zero egress + a tamper-evident audit trail
+python -m vigil scan suspicious.sh --offline --audit-log ~/.vigil/audit.jsonl
+python -m vigil verify-audit ~/.vigil/audit.jsonl
 ```
+
+`--offline` disables threat intel **and** AI narration and blocks upload
+regardless of any other flag, including `--upload`. Analysis stays fully
+functional — only external corroboration and AI-written prose are lost. It can
+also be enforced centrally via `policy.offline: true` in `config.yaml`, so it
+does not depend on an analyst remembering a flag.
 
 Exit code is `1` when the verdict says escalate, `0` otherwise — so VIGIL
 drops into a shell pipeline.
@@ -145,4 +159,15 @@ hostile input (zip-slip, decompression bombs, decode bombs, malformed
 encodings, broken caches, rate-limit and network failures).
 
 See [THREAT_MODEL.md](THREAT_MODEL.md) for the adversary model and the
-guarantees each module is responsible for.
+guarantees each module is responsible for, and [COMPLIANCE.md](COMPLIANCE.md)
+for control mappings to NIST SP 800-171/800-53, CIS Controls v8.1, and
+ISO/IEC 27001:2022 — including an honest gaps section.
+
+## License
+
+Licensed under the [Apache License 2.0](LICENSE).
+
+You may use, modify, and distribute this software, including commercially.
+The license includes an express patent grant, and it grants no rights to the
+VIGIL name or marks. Derivative works must retain the copyright notice, include
+the [NOTICE](NOTICE) file, and state what they changed.

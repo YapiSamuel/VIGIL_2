@@ -108,6 +108,20 @@ def load_config(path: Optional[str] = None) -> Config:
     if ycfg.get("rules_dir"):
         cfg.yara_rules_dir = os.path.expanduser(ycfg["rules_dir"])
 
+    # Policy settings. `offline: true` is how an organization enforces "nothing
+    # leaves this machine" centrally, rather than relying on an analyst to
+    # remember --offline on every invocation. Config can only ever *enable*
+    # offline; there is deliberately no way to switch it back off from the CLI.
+    policy = data.get("policy", {}) or {}
+    if bool(policy.get("offline", False)):
+        cfg.offline = True
+        cfg.enable_intel = False
+        cfg.enable_ai = False
+        cfg.allow_upload = False
+        cfg.notes.append(f"offline mode enforced by policy in {chosen}")
+    if policy.get("audit_log"):
+        cfg.audit_log = os.path.expanduser(str(policy["audit_log"]))
+
     return cfg
 
 
@@ -303,6 +317,30 @@ yara:
 """
 
 
+def _cmd_verify_audit(args) -> int:
+    """Verify the audit log's hash chain. Exit 0 intact, 1 broken, 2 unreadable.
+
+    Tamper-*evidence*, not tamper-proofing: an attacker with write access can
+    rebuild the whole chain. Forward to a WORM store or SIEM for the stronger
+    property. See COMPLIANCE.md.
+    """
+    if not os.path.isfile(args.path):
+        sys.stderr.write(f"no such audit log: {args.path}\n")
+        return 2
+    ok, checked, bad_line = audit.verify(args.path)
+    if ok:
+        print(f"audit chain INTACT - {checked} record(s) verified in {args.path}")
+        return 0
+    if bad_line is None:
+        sys.stderr.write(f"could not read audit log: {args.path}\n")
+        return 2
+    sys.stderr.write(
+        f"audit chain BROKEN at line {bad_line} of {args.path} "
+        f"({checked} record(s) verified before the break).\n"
+        "A record was altered, deleted, or reordered after it was written.\n")
+    return 1
+
+
 def _cmd_setup(args) -> int:
     target_dir = os.path.join(os.path.expanduser("~"), ".vigil")
     os.makedirs(target_dir, exist_ok=True)
@@ -344,16 +382,19 @@ def _cmd_scan(args) -> int:
         config.audit_log = args.audit_log
 
     # Offline is a hard switch and deliberately wins over every other flag,
-    # including --upload. If an operator says "nothing leaves this machine",
-    # no combination of other options may override that.
+    # including --upload. If an operator OR a config policy says "nothing
+    # leaves this machine", no combination of other options may override it.
+    # Note this is evaluated after the flags above, so a config-enforced
+    # offline still clears allow_upload set by --upload.
     if args.offline:
         config.offline = True
+    if config.offline:
         config.enable_intel = False
         config.enable_ai = False
         config.allow_upload = False
         if args.upload:
             sys.stderr.write(
-                "note: --offline overrides --upload; no data will be sent.\n")
+                "note: offline mode overrides --upload; no data will be sent.\n")
         config.notes.append(
             "offline mode: all network egress disabled (intel + AI narration)")
 
@@ -451,6 +492,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--yes", action="store_true",
                       help="skip the --upload confirmation prompt")
     scan.set_defaults(func=_cmd_scan)
+
+    va = sub.add_parser("verify-audit",
+                        help="verify the integrity of an audit log chain")
+    va.add_argument("path", help="path to the audit log (JSONL)")
+    va.set_defaults(func=_cmd_verify_audit)
 
     setup = sub.add_parser("setup", help="first-run setup: write a config template")
     setup.add_argument("--force", action="store_true",

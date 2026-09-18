@@ -23,3 +23,19 @@ ai:
 yara:
   enable: true
   # rules_dir: rules   # defaults to the repo's rules/ directory
+
+# Policy settings. Use these to enforce behavior across a team rather than
+# relying on analysts to remember command-line flags.
+policy:
+  # offline: true disables ALL outbound network access (threat intel AND AI
+  # narration) and blocks file upload, regardless of any command-line flag
+  # including --upload. Set this when analyzing files that may contain CUI,
+  # PHI, or other regulated data. Config can only turn offline ON; there is
+  # deliberately no CLI option to turn it back off.
+  offline: false
+
+  # Append an operator audit record (who, what, when, which egress paths) for
+  # every scan. Supports NIST 800-171 3.3.1/3.3.2, ISO 27001 A.8.15, CIS
+  # Control 8. Records are hash-chained; verify with:
+  #     python -m vigil verify-audit <path>
+  # audit_log: ~/.vigil/audit.jsonl
