@@ -84,3 +84,19 @@ def test_every_item_cites_a_signal():
     s = score(findings, iocs, 2, [])
     for item in s.items:
         assert item.signal  # provenance is mandatory
+
+
+def test_truncated_analysis_prevents_a_silent_safe_verdict():
+    """A file whose payload hides below the decode limit must not score 0."""
+    s = score([], [], 8, bounds_hit=["max_depth"])
+    assert s.value >= 30
+    assert s.band != "SAFE"
+    assert any("analysis_truncated=max_depth" == i.signal for i in s.items)
+    assert any("NOT analyzed" in i.reason for i in s.items)
+
+
+def test_no_truncation_signal_when_bounds_not_hit():
+    s = score([], [], 0, bounds_hit=[])
+    assert not any("analysis_truncated" in i.signal for i in s.items)
+    s2 = score([], [], 0)          # omitted entirely
+    assert s2.value == 0

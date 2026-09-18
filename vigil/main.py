@@ -32,7 +32,7 @@ from . import scorer
 from . import static_analyzer
 from . import verdict as verdict_mod
 from .cache import Cache
-from .deobfuscator import deobfuscate
+from .deobfuscator import MAX_DEPTH, deobfuscate
 from .intel import IntelConfig, gather
 from .ioc_extractor import extract as extract_iocs
 
@@ -152,7 +152,21 @@ def _analyze_blob(ingest_like, text: str, config: Config,
         intel = IntelBundle(notes=["intel lookups disabled by flag"])
 
     depth = reporter.max_depth(root)
-    the_score = scorer.score(analysis.findings, iocs, depth, intel.results)
+    the_score = scorer.score(analysis.findings, iocs, depth, intel.results,
+                             bounds_hit=root.bounds_hit)
+    if root.bounds_hit:
+        _BOUND_NOTES = {
+            "max_depth": (f"obfuscation nested deeper than the decode limit "
+                          f"(MAX_DEPTH={MAX_DEPTH}); content below it was "
+                          "NOT analyzed"),
+            "max_layers": ("layer budget exhausted; some decoded content was "
+                           "not analyzed"),
+            "max_blob_size": ("a decoded layer exceeded the size limit and "
+                              "was not analyzed"),
+        }
+        for b in root.bounds_hit:
+            analysis.notes.append(
+                "INCOMPLETE ANALYSIS: " + _BOUND_NOTES.get(b, b))
     the_verdict = verdict_mod.explain(
         the_score, findings=analysis.findings, iocs=iocs,
         intel_results=intel.results, model=config.ai_model,

