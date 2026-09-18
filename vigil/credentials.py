@@ -48,9 +48,10 @@ def mask(value: Optional[str]) -> str:
     return f"{v[:4]}{'*' * 8}{v[-4:]}  (len {len(v)})"
 
 
-def load_file(path: str = CREDENTIALS_PATH) -> dict[str, str]:
+def load_file(path: Optional[str] = None) -> dict[str, str]:
     """Read stored credentials. A missing or unreadable file is not an error;
     VIGIL simply behaves as though no keys were configured."""
+    path = path or CREDENTIALS_PATH
     creds: dict[str, str] = {}
     try:
         with open(path, "r", encoding="utf-8") as fh:
@@ -67,16 +68,18 @@ def load_file(path: str = CREDENTIALS_PATH) -> dict[str, str]:
     return creds
 
 
-def get(name: str, path: str = CREDENTIALS_PATH) -> Optional[str]:
+def get(name: str, path: Optional[str] = None) -> Optional[str]:
     """Resolve one key. Environment first, stored file second."""
+    path = path or CREDENTIALS_PATH
     from_env = os.environ.get(name)
     if from_env:
         return from_env
     return load_file(path).get(name)
 
 
-def source_of(name: str, path: str = CREDENTIALS_PATH) -> str:
+def source_of(name: str, path: Optional[str] = None) -> str:
     """Where a key is coming from: 'environment', 'file', or 'unset'."""
+    path = path or CREDENTIALS_PATH
     if os.environ.get(name):
         return "environment"
     if name in load_file(path):
@@ -84,11 +87,12 @@ def source_of(name: str, path: str = CREDENTIALS_PATH) -> str:
     return "unset"
 
 
-def save(creds: dict[str, str], path: str = CREDENTIALS_PATH) -> tuple[bool, str]:
+def save(creds: dict[str, str], path: Optional[str] = None) -> tuple[bool, str]:
     """Merge ``creds`` into the store, 0600. Returns (ok, message).
 
     An empty value removes that key. Never raises.
     """
+    path = path or CREDENTIALS_PATH
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         existing = load_file(path)
@@ -128,8 +132,9 @@ def _restrict(path: str) -> None:
         pass
 
 
-def permissions_warning(path: str = CREDENTIALS_PATH) -> Optional[str]:
+def permissions_warning(path: Optional[str] = None) -> Optional[str]:
     """Return a warning if the store is readable by group or others."""
+    path = path or CREDENTIALS_PATH
     if os.name == "nt" or not os.path.isfile(path):
         return None
     try:

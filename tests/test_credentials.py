@@ -135,3 +135,100 @@ def test_save_to_unwritable_path_returns_false(tmp_path):
     d.mkdir()
     ok, msg = c.save({"VT_API_KEY": "x"}, path=str(d))
     assert ok is False and msg
+
+
+# --- `vigil setup` key prompt ----------------------------------------------
+
+def _redirect_store(monkeypatch, tmp_path):
+    """Point the module-level store at a temp file so no test can ever touch
+    the real ~/.vigil/credentials."""
+    p = str(tmp_path / "credentials")
+    monkeypatch.setattr(c, "CREDENTIALS_PATH", p)
+    return p
+
+
+def test_setup_offers_the_prompt_on_a_terminal(monkeypatch, tmp_path, capsys):
+    """Plain `vigil setup` should ASK, not require --keys."""
+    from vigil.main import main
+    _redirect_store(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    asked = {}
+
+    def fake_input(prompt=""):
+        asked["prompt"] = prompt
+        return "n"
+
+    monkeypatch.setattr("builtins.input", fake_input)
+    assert main(["setup", "--force"]) == 0
+    assert "API keys" in asked.get("prompt", "")
+    assert "Skipped" in capsys.readouterr().out
+
+
+def test_setup_does_not_prompt_when_not_a_terminal(monkeypatch, tmp_path):
+    """Piping `vigil setup` must not block on input that never arrives."""
+    from vigil.main import main
+    _redirect_store(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: False)
+
+    def explode(prompt=""):
+        raise AssertionError("setup prompted without a terminal")
+
+    monkeypatch.setattr("builtins.input", explode)
+    assert main(["setup", "--force"]) == 0
+
+
+def test_setup_no_keys_never_prompts(monkeypatch, tmp_path):
+    from vigil.main import main
+    _redirect_store(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda p="": (_ for _ in ()).throw(
+        AssertionError("--no-keys should suppress the prompt")))
+    assert main(["setup", "--force", "--no-keys"]) == 0
+
+
+def test_setup_yes_collects_and_stores_keys(monkeypatch, tmp_path):
+    from vigil.main import main
+    p = _redirect_store(monkeypatch, tmp_path)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    answers = iter(["vt-key-value-123456", "", "anthropic-key-abcdef"])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+
+    assert main(["setup", "--force"]) == 0
+    stored = c.load_file(p)
+    assert stored["VT_API_KEY"] == "vt-key-value-123456"
+    assert stored["ANTHROPIC_API_KEY"] == "anthropic-key-abcdef"
+    assert "ABUSEIPDB_API_KEY" not in stored     # blank input = skip
+
+
+def test_setup_dash_removes_a_stored_key(monkeypatch, tmp_path):
+    from vigil.main import main
+    p = _redirect_store(monkeypatch, tmp_path)
+    c.save({"VT_API_KEY": "remove-me-please"}, path=p)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    answers = iter(["-", "", ""])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+
+    assert main(["setup", "--force"]) == 0
+    assert "VT_API_KEY" not in c.load_file(p)
+
+
+def test_setup_output_never_echoes_a_key(monkeypatch, tmp_path, capsys):
+    from vigil.main import main
+    _redirect_store(monkeypatch, tmp_path)
+    secret = "super-secret-key-value-9876543210"
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("sys.stdout.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "y")
+    answers = iter([secret, "", ""])
+    monkeypatch.setattr("getpass.getpass", lambda prompt="": next(answers))
+
+    main(["setup", "--force"])
+    out = capsys.readouterr()
+    assert secret not in out.out and secret not in out.err

@@ -383,6 +383,21 @@ def _cmd_setup(args) -> int:
     if args.keys:
         return _prompt_for_keys()
 
+    # Offer the prompt rather than hiding it behind a flag. Only when there is
+    # a real terminal: piping `vigil setup` into something must not block
+    # waiting for input that will never come.
+    if not args.no_keys and sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            answer = input("\nConfigure API keys now? [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if answer in ("y", "yes"):
+            return _prompt_for_keys()
+        print("Skipped. You can run this again any time with: "
+              f"{_prog()} setup --keys")
+        return 0
+
     print(f"\nTo store keys locally, run:  {_prog()} setup --keys")
     print("Or export them as environment variables, which always take "
           "precedence.")
@@ -633,7 +648,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     setup = sub.add_parser("setup", help="first-run setup: write a config template")
     setup.add_argument("--keys", action="store_true",
-                       help="interactively enter and store API keys")
+                       help="go straight to entering API keys")
+    setup.add_argument("--no-keys", action="store_true",
+                       help="show status only; never prompt for keys")
     setup.add_argument("--force", action="store_true",
                        help="overwrite an existing config")
     setup.set_defaults(func=_cmd_setup)
