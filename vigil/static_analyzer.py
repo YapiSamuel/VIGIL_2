@@ -65,8 +65,14 @@ _PATTERNS: list[tuple[str, str, Optional[str], str, "re.Pattern[str]"]] = [
      _p(r"\b(?:iex|invoke-expression)\b")),
     ("powershell_encoded", "execution", "T1027", "high",
      _p(r"-e(?:nc|ncodedcommand)?\s+[A-Za-z0-9+/=]{16,}")),
-    ("powershell_hidden_bypass", "execution", "T1059.001", "high",
-     _p(r"-(?:windowstyle\s+hidden|w\s+hidden|nop|noprofile|ep\s+bypass|executionpolicy\s+bypass)")),
+    # Hiding the window is T1564.003 (Hide Artifacts: Hidden Window); bypassing
+    # execution policy is a defense-evasion control modification (T1562.001).
+    # They were previously one pattern labelled T1059.001, which was wrong for
+    # both halves.
+    ("powershell_hidden_window", "anti_forensics", "T1564.003", "medium",
+     _p(r"-(?:windowstyle\s+hidden|w\s+hidden)\b")),
+    ("powershell_policy_bypass", "execution", "T1562.001", "high",
+     _p(r"-(?:ep|executionpolicy)\s+bypass\b|-(?:nop|noprofile|noni|noninteractive)\b")),
     ("shell_eval", "execution", "T1059.004", "high",
      _p(r"\beval\s*\(|\bexec\s*\(|\bsystem\s*\(")),
     ("python_dynamic_exec", "execution", "T1059.006", "high",
@@ -93,7 +99,13 @@ _PATTERNS: list[tuple[str, str, Optional[str], str, "re.Pattern[str]"]] = [
     ("clear_windows_logs", "anti_forensics", "T1070.001", "high",
      _p(r"clear-eventlog|wevtutil\s+cl|remove-eventlog")),
     ("clear_shell_history", "anti_forensics", "T1070.003", "medium",
-     _p(r"history\s+-c|unset\s+HISTFILE|rm\s+[^\n]*\.bash_history|/var/log")),
+     _p(r"history\s+-c|unset\s+HISTFILE|export\s+HISTSIZE=0|"
+        r"rm\s+[^\n]*\.bash_history|ln\s+-sf\s+/dev/null[^\n]*history")),
+    # Split from clear_shell_history: deleting system logs is a distinct
+    # technique (T1070.002) from clearing command history (T1070.003).
+    ("clear_unix_system_logs", "anti_forensics", "T1070.002", "medium",
+     _p(r"rm\s+-[rf]*\s*[^\n]*/var/log|>\s*/var/log/|truncate\s+-s\s*0\s*/var/log|"
+        r"journalctl\s+--vacuum(?:-time|-size)")),
     ("timestomp", "anti_forensics", "T1070.006", "medium",
      _p(r"\btouch\s+-[amt]|set-itemproperty[^\n]*lastwritetime")),
     ("disable_defender", "anti_forensics", "T1562.001", "high",
@@ -106,9 +118,11 @@ _PATTERNS: list[tuple[str, str, Optional[str], str, "re.Pattern[str]"]] = [
     ("browser_credential_theft", "credential_access", "T1555.003", "medium",
      _p(r"login\s+data|\\google\\chrome\\user\s+data|logins\.json|key4\.db")),
     # --- c2 ---
-    ("reverse_shell_bash", "c2", "T1071", "high",
+    # T1095 (Non-Application Layer Protocol), not T1071: these are raw TCP/UDP
+    # sockets, not HTTP/DNS/etc. Kept consistent with socket_backconnect below.
+    ("reverse_shell_bash", "c2", "T1095", "high",
      _p(r"/dev/tcp/|/dev/udp/|bash\s+-i\s*>&")),
-    ("reverse_shell_nc", "c2", "T1071", "high",
+    ("reverse_shell_nc", "c2", "T1095", "high",
      _p(r"\bnc(?:at)?\b[^\n]*(?:-e|-c)\b|mkfifo[^\n]*\|\s*(?:ba)?sh")),
     ("socket_backconnect", "c2", "T1095", "medium",
      _p(r"socket\.socket|new-object\s+[^\n]*sockets\.tcpclient")),

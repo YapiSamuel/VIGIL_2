@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional
 
+from . import audit
 from . import ingestor
 from . import reporter
 from . import scorer
@@ -59,6 +60,11 @@ class Config:
     yara_rules_dir: Optional[str] = None
     allow_upload: bool = False
     color: bool = True
+    # Offline mode disables every outbound path in one switch (intel clients
+    # AND the AI narrator) and hard-blocks upload. This is the mode to use
+    # when analyzing files that may contain CUI, PHI, or regulated data.
+    offline: bool = False
+    audit_log: Optional[str] = None
     notes: list[str] = field(default_factory=list)
 
 
@@ -334,8 +340,24 @@ def _cmd_scan(args) -> int:
         config.color = False
     if args.upload:
         config.allow_upload = True
+    if args.audit_log:
+        config.audit_log = args.audit_log
 
-    if args.upload:
+    # Offline is a hard switch and deliberately wins over every other flag,
+    # including --upload. If an operator says "nothing leaves this machine",
+    # no combination of other options may override that.
+    if args.offline:
+        config.offline = True
+        config.enable_intel = False
+        config.enable_ai = False
+        config.allow_upload = False
+        if args.upload:
+            sys.stderr.write(
+                "note: --offline overrides --upload; no data will be sent.\n")
+        config.notes.append(
+            "offline mode: all network egress disabled (intel + AI narration)")
+
+    if args.upload and not config.offline:
         # Hard rule 3: an explicit, printed warning before any upload path.
         sys.stderr.write(
             "WARNING: --upload will send the FILE ITSELF to VirusTotal. "
@@ -361,6 +383,24 @@ def _cmd_scan(args) -> int:
 
     for n in config.notes:
         report.setdefault("notes", []).append(n)
+
+    if config.audit_log:
+        f = report.get("file", {}) or {}
+        v = report.get("verdict", {}) or {}
+        ok = audit.write(config.audit_log, audit.build_record(
+            event="scan",
+            target={"path": f.get("path"), "sha256": f.get("sha256"),
+                    "size": f.get("size"), "type": f.get("detected_type")},
+            verdict={"band": v.get("band"), "score": v.get("score"),
+                     "escalate": v.get("escalate"),
+                     "explanation_source": v.get("explanation_source")},
+            egress={"intel": config.enable_intel, "ai": config.enable_ai,
+                    "upload": config.allow_upload, "offline": config.offline},
+            vigil_version=reporter.VIGIL_VERSION,
+        ))
+        if not ok:
+            report.setdefault("notes", []).append(
+                f"could not write audit log to {config.audit_log}")
 
     if args.json:
         print(reporter.to_json(report))
@@ -400,6 +440,11 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--no-ai", action="store_true",
                       help="skip AI narration; use deterministic explanation")
     scan.add_argument("--no-yara", action="store_true", help="skip YARA")
+    scan.add_argument("--offline", action="store_true",
+                      help="disable ALL network egress (intel + AI) and block "
+                           "upload; use for CUI/regulated data")
+    scan.add_argument("--audit-log", metavar="PATH",
+                      help="append an operator audit record to PATH (JSONL)")
     scan.add_argument("--no-color", action="store_true", help="disable color")
     scan.add_argument("--upload", action="store_true",
                       help="upload the file to VirusTotal (prints a warning)")

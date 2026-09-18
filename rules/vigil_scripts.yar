@@ -12,7 +12,7 @@ rule powershell_download_cradle
 {
     meta:
         category = "download"
-        attack_id = "T1059.001"
+        attack_id = "T1105"
         severity = "high"
         description = "PowerShell one-liner that fetches and runs remote code"
     strings:
@@ -42,7 +42,7 @@ rule reverse_shell_unix
 {
     meta:
         category = "c2"
-        attack_id = "T1071"
+        attack_id = "T1095"
         severity = "high"
         description = "Unix reverse/bind shell one-liners"
     strings:

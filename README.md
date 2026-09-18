@@ -15,11 +15,11 @@ $ vigil scan suspicious.sh
 
   Why  [template]
     Risk band MALICIOUS (score 100/100). Primary evidence: c2 finding (high)
-    [pattern:reverse_shell_bash [T1071]]; download finding (high)
+    [pattern:reverse_shell_bash [T1095]]; download finding (high)
     [pattern:curl_wget_pipe_shell [T1105]] ...
 
   Static findings (3)
-      high  reverse_shell_bash [T1071]  (layer 0/source)
+      high  reverse_shell_bash [T1095]  (layer 0/source)
       high  curl_wget_pipe_shell [T1105]  (layer 1/base64)   <-- found INSIDE a base64 blob
 ```
 
@@ -86,9 +86,13 @@ URLhaus (abuse.ch) needs no key and works out of the box.
 - **Nothing is ever executed.** VIGIL is static analysis only. Every operation
   is a pure text or byte transform. VIGIL does not detonate; it tells you
   whether you should.
-- **Only the `intel/` package makes network calls.** Every other module is
-  offline and pure. If someone asks "can this tool leak my sample," the
-  answer is in one directory.
+- **Exactly two modules make network calls:** `intel/` (threat-intel lookups)
+  and `verdict.py` (AI narration, only when an Anthropic key is set). Every
+  other module is offline and pure. Neither path ever transmits the file or
+  its contents — but `verdict.py` does send extracted IOCs (URLs, domains,
+  public IPs) as evidence. **Use `--offline` to disable both**, which is the
+  correct mode for CUI, PHI, or other regulated data. See
+  [THREAT_MODEL.md](THREAT_MODEL.md) and [COMPLIANCE.md](COMPLIANCE.md).
 - **Hash-first.** VIGIL looks up your file by SHA256. It never uploads the
   file itself to VirusTotal unless you pass `--upload`, which prints a warning
   and prompts first — because uploaded files become retrievable by VT's paid

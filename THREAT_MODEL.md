@@ -36,16 +36,33 @@ code.** Every operation is a pure text or byte transform.
 - The AI verdict layer receives a closed list of already-collected evidence as
   text; the model cannot cause code execution and cannot change the score.
 
-### 2. Network egress confined to `vigil/intel/` — *architectural*
+### 2. Network egress is confined to two modules — *architectural*
 
-Only the `intel/` package opens a socket. Every other module is offline and
-pure. This makes the exfiltration question auditable by reading one directory.
-All outbound HTTP funnels through `intel/base.py::http_json`.
+**Exactly two components open a socket.** Every other module is offline and
+pure, so the exfiltration question is answerable by reading two files.
+
+**a. `vigil/intel/`** — threat-intel lookups. All outbound HTTP funnels
+through `intel/base.py::http_json`.
 
 - **Hash-first.** The file is looked up by SHA256. The file itself is uploaded
   only when the caller passes `--upload`, which prints a warning and prompts.
 - Missing keys / rate limits / network errors degrade to noted partial
   results; they never crash the scan and never retry unboundedly.
+
+**b. `vigil/verdict.py`** — AI narration, when `ANTHROPIC_API_KEY` is set and
+`--no-ai` is not passed. This path transmits the assembled **evidence list**
+to the Anthropic API. That list contains signal identifiers, rule names,
+point values, and **extracted IOC values (URLs, domains, public IPs)** — see
+`verdict.py::_build_evidence`. It does **not** transmit the file, its bytes,
+or decoded layer text.
+
+> ⚠️ **Regulated-data warning.** Extracted URLs retain their full path and
+> query string, so an internal URL in the analyzed file can leave the host via
+> this path. Private/reserved IP ranges are filtered out by the IOC extractor,
+> but internal *hostnames* and URL parameters are not. **When analyzing files
+> that may contain CUI, PHI, or other regulated data, run with `--offline`,**
+> which disables both egress paths and hard-blocks upload regardless of any
+> other flag.
 
 ### 3. Resource-exhaustion resistance — *ingestor, deobfuscator, intel*
 
