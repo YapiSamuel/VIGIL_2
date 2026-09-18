@@ -1,0 +1,66 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+# The PyPI distribution name is "vigil-triage" because "vigil" is already
+# taken. The installed command is still `vigil` (see [project.scripts]).
+name = "vigil-triage"
+version = "2.0.0"
+description = "Pre-execution malware triage for scripts: static, explainable, and offline by default."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+authors = [{ name = "Samuel N'Guessan" }]
+keywords = [
+    "security", "malware", "triage", "soc", "dfir", "static-analysis",
+    "deobfuscation", "yara", "incident-response", "mitre-attack",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: System :: Monitoring",
+]
+
+# Intentionally empty: VIGIL runs on the standard library alone. Everything
+# that could be a dependency is optional and degrades gracefully, which is
+# what makes "zero config, no keys, still works" true rather than aspirational.
+dependencies = []
+
+[project.optional-dependencies]
+yara = ["yara-python>=4.3"]
+config = ["PyYAML>=6.0"]
+ai = ["anthropic>=0.40"]
+# Everything a practitioner might want, in one extra.
+full = ["yara-python>=4.3", "PyYAML>=6.0", "anthropic>=0.40"]
+dev = ["pytest>=8.0", "yara-python>=4.3", "PyYAML>=6.0"]
+
+[project.urls]
+Homepage = "https://github.com/YapiSamuel/VIGIL_2"
+Repository = "https://github.com/YapiSamuel/VIGIL_2"
+Issues = "https://github.com/YapiSamuel/VIGIL_2/issues"
+Changelog = "https://github.com/YapiSamuel/VIGIL_2/releases"
+
+[project.scripts]
+vigil = "vigil.main:main"
+
+[tool.setuptools.packages.find]
+include = ["vigil*"]
+
+[tool.setuptools.package-data]
+# YARA rules must ship inside the wheel; they live in vigil/rules for exactly
+# this reason.
+vigil = ["rules/*.yar", "rules/*.yara"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

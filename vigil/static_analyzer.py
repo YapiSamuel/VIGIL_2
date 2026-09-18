@@ -151,10 +151,23 @@ def _pattern_scan(text: str, layer: Layer) -> list[Finding]:
 
 # --- YARA -----------------------------------------------------------------
 
-def _default_rules_dir() -> str:
-    # repo_root/rules
-    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(here, "rules")
+def _default_rules_dir() -> Optional[str]:
+    """Locate the shipped YARA rules.
+
+    Rules live inside the package (``vigil/rules``) so they survive a pip
+    install, where anything at the old repo-root path would be absent. The
+    repo-root location is still checked second, so a checkout using the
+    previous layout keeps working.
+    """
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    candidates = [
+        os.path.join(pkg_dir, "rules"),                      # installed/package
+        os.path.join(os.path.dirname(pkg_dir), "rules"),     # legacy repo root
+    ]
+    for path in candidates:
+        if os.path.isdir(path):
+            return path
+    return None
 
 
 def compile_yara(rules_dir: Optional[str] = None):
@@ -163,7 +176,7 @@ def compile_yara(rules_dir: Optional[str] = None):
     if not _YARA_AVAILABLE:
         return None
     rules_dir = rules_dir or _default_rules_dir()
-    if not os.path.isdir(rules_dir):
+    if not rules_dir or not os.path.isdir(rules_dir):
         return None
     filepaths = {}
     for fname in sorted(os.listdir(rules_dir)):

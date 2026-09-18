@@ -54,15 +54,34 @@ VIGIL runs on the **standard library alone**. With zero config and no API
 keys it performs full local analysis; optional extras add capability and
 degrade gracefully (with a printed note, never a crash) when absent.
 
+### Install
+
 ```bash
-python -m vigil scan suspicious.sh          # local-only, zero config
-python -m vigil scan bundle.tar.gz          # archives are extracted safely
-python -m vigil scan suspicious.ps1 --json  # machine-readable report
-python -m vigil setup                        # write a config template, show key status
+pip install vigil-triage            # the command is `vigil`
+pipx install vigil-triage           # isolated, recommended for a CLI tool
+
+pip install "vigil-triage[full]"    # with YARA, config, and AI support
+```
+
+Or run straight from a clone with no install at all, since VIGIL needs only
+the standard library:
+
+```bash
+git clone https://github.com/YapiSamuel/VIGIL_2.git && cd VIGIL_2
+python3 -m vigil scan suspicious.sh
+```
+
+### Use
+
+```bash
+vigil scan suspicious.sh                    # local-only, zero config
+vigil scan bundle.tar.gz                    # archives are extracted safely
+vigil scan suspicious.ps1 --json            # machine-readable report
+vigil setup --keys                          # optionally store API keys
 
 # Regulated data (CUI / PHI): zero egress + a tamper-evident audit trail
-python -m vigil scan suspicious.sh --offline --audit-log ~/.vigil/audit.jsonl
-python -m vigil verify-audit ~/.vigil/audit.jsonl
+vigil scan suspicious.sh --offline --audit-log ~/.vigil/audit.jsonl
+vigil verify-audit ~/.vigil/audit.jsonl
 ```
 
 `--offline` disables threat intel **and** AI narration and blocks upload
@@ -82,10 +101,11 @@ Optional extras (`pip install -r requirements.txt`):
 | `yara-python`  | YARA rule matching over every layer      | pattern detection only |
 | `anthropic`    | AI-written verdict narration             | deterministic explanation |
 
-### API keys (optional, environment variables only)
+### API keys — entirely optional
 
-Secrets are read **only** from the environment — never from config, never
-logged, never in reports.
+**VIGIL runs fully without any key.** Keys only add external corroboration and
+AI-written prose; they never affect the verdict, which is always computed
+locally by the deterministic scorer.
 
 | Variable            | Enables                          |
 |---------------------|----------------------------------|
@@ -94,6 +114,20 @@ logged, never in reports.
 | `ANTHROPIC_API_KEY` | AI-written verdict explanations  |
 
 URLhaus (abuse.ch) needs no key and works out of the box.
+
+Two ways to supply a key, in precedence order:
+
+1. **Environment variables** — always win, and the right choice for CI.
+2. **`vigil setup --keys`** — stores them in `~/.vigil/credentials` with
+   owner-only permissions (`chmod 600` on POSIX). Deliberately **not** in
+   `config.yaml`, which ships in the repo and is documented secret-free, and
+   deliberately outside the project tree so `git add .` cannot reach it.
+
+Keys are never logged, never written into reports, and never included in error
+messages. Where a key is displayed at all, it is masked.
+
+⚠️ **Any key means network egress.** Use `--offline` when analyzing files that
+may contain regulated data.
 
 ## Safety model
 
