@@ -89,9 +89,15 @@ jobs:
           python - <<'PY'
           import json
           lines = open("audit.jsonl").read().splitlines()
-          rec = json.loads(lines[0]); rec["verdict"]["band"] = "SAFE"
+          rec = json.loads(lines[0])
+          # a.sh is benign, so the band is already SAFE: rewriting it to SAFE
+          # would be a no-op and the chain would (correctly) still verify.
+          assert rec["verdict"]["band"] == "SAFE", rec["verdict"]
+          rec["verdict"]["band"] = "MALICIOUS"
+          rec["operator"] = "someone-else"
           lines[0] = json.dumps(rec)
           open("audit.jsonl", "w").write("\n".join(lines) + "\n")
+          print("record 0 altered")
           PY
           if python -m vigil verify-audit audit.jsonl; then
             echo "FAIL: tampering was not detected"; exit 1
