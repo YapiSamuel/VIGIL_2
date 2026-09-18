@@ -24,6 +24,18 @@ reports/*
 *.db
 .vigil/
 
+# Credentials. Stored in ~/.vigil/credentials, never in the project tree -
+# but ignore any stray copy so an accidental one can never be committed.
+credentials
+*.credentials
+
+# Generated test corpus (tools/make_samples.py) and evaluation output.
+# Samples are generated, never committed: they contain reverse-shell strings
+# that would trip antivirus for anyone cloning the repo.
+samples/
+results.csv
+*.results.csv
+
 # Editor / OS / tooling
 .idea/
 .vscode/

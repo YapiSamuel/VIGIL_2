@@ -177,7 +177,8 @@ def explain(score: Score, findings=None, iocs=None, intel_results=None,
         attack_ids=attack_ids,
     )
 
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    from .credentials import get as _cred
+    key = api_key or _cred("ANTHROPIC_API_KEY")
     if use_ai and key:
         text = _anthropic_explanation(evidence, score, model, key)
         if text:

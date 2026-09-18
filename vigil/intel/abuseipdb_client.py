@@ -13,7 +13,9 @@ ABUSE_THRESHOLD = 25
 
 
 def _api_key(explicit: Optional[str]) -> Optional[str]:
-    return explicit or os.environ.get("ABUSEIPDB_API_KEY") or None
+    # Environment first, then the optional local store (see credentials.py).
+    from ..credentials import get as _cred
+    return explicit or _cred("ABUSEIPDB_API_KEY") or None
 
 
 def lookup_ip(ip: str, ip_type: str = "ipv4", api_key: Optional[str] = None,

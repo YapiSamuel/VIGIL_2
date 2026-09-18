@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from . import audit
+from . import credentials
 from . import ingestor
 from . import reporter
 from . import scorer
@@ -365,17 +366,87 @@ def _cmd_setup(args) -> int:
         with open(cfg_path, "w", encoding="utf-8") as fh:
             fh.write(_CONFIG_TEMPLATE)
         print(f"wrote config template to {cfg_path}")
-    print("\nOptional API keys (set as environment variables):")
-    for var, what in [
-        ("VT_API_KEY", "VirusTotal hash lookups"),
-        ("ABUSEIPDB_API_KEY", "AbuseIPDB IP reputation"),
-        ("ANTHROPIC_API_KEY", "AI-written verdict explanations"),
-    ]:
-        state = "set" if os.environ.get(var) else "not set"
-        print(f"  {var:<20} {what:<34} [{state}]")
+    print("\nOptional API keys - current status:")
+    for var, what in credentials.KNOWN_KEYS.items():
+        src = credentials.source_of(var)
+        shown = credentials.mask(credentials.get(var))
+        print(f"  {var:<20} {what:<34} [{src}] {shown}")
+
+    warn = credentials.permissions_warning()
+    if warn:
+        sys.stderr.write(f"\nWARNING: {warn}\n")
+
     print("\nVIGIL runs fully without any of these, degrading to local-only "
-          "analysis.")
+          "analysis. Keys only add external corroboration and AI-written prose;"
+          "\nthe verdict itself is always computed locally.")
+
+    if args.keys:
+        return _prompt_for_keys()
+
+    print(f"\nTo store keys locally, run:  {_prog()} setup --keys")
+    print("Or export them as environment variables, which always take "
+          "precedence.")
     return 0
+
+
+def _prompt_for_keys() -> int:
+    """Interactively collect API keys and store them 0600 outside the repo."""
+    import getpass
+
+    print("\n" + "=" * 68)
+    print("API KEY SETUP")
+    print("=" * 68)
+    print(f"Keys are stored in {credentials.CREDENTIALS_PATH}")
+    print("  - NOT in config.yaml, and NOT inside the project directory,")
+    print("    so they cannot be committed to git by accident.")
+    print("  - Owner-read-only (chmod 600) on Linux and macOS.")
+    print("  - Environment variables of the same name still take precedence.")
+    print("\nInput is hidden. Press Enter to skip a key, or type '-' to "
+          "remove a stored one.\n")
+
+    if not sys.stdin.isatty():
+        sys.stderr.write("setup --keys needs an interactive terminal.\n")
+        return 2
+
+    collected: dict[str, str] = {}
+    for var, what in credentials.KNOWN_KEYS.items():
+        current = credentials.source_of(var)
+        hint = f" [currently: {current}]" if current != "unset" else ""
+        try:
+            value = getpass.getpass(f"  {var} ({what}){hint}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\naborted; nothing was written.")
+            return 2
+        if value == "-":
+            collected[var] = ""          # explicit removal
+            print(f"    {var} will be removed")
+        elif value:
+            collected[var] = value
+            print(f"    stored {credentials.mask(value)}")
+        else:
+            print("    skipped")
+
+    if not collected:
+        print("\nNothing entered; no changes made.")
+        return 0
+
+    ok, msg = credentials.save(collected)
+    print(f"\n{'OK' if ok else 'FAILED'}: {msg}")
+    if not ok:
+        return 2
+
+    print("\nVerifying:")
+    for var in credentials.KNOWN_KEYS:
+        print(f"  {var:<20} [{credentials.source_of(var)}] "
+              f"{credentials.mask(credentials.get(var))}")
+    print("\nKeys are never printed in reports, logs, or error messages.")
+    print("Remember: any key means network egress. Use --offline when "
+          "analyzing regulated data.")
+    return 0
+
+
+def _prog() -> str:
+    return "vigil" if os.path.basename(sys.argv[0]) == "vigil" else "python -m vigil"
 
 
 def _cmd_scan(args) -> int:
@@ -479,11 +550,59 @@ def _cmd_scan(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="vigil",
-        description="Pre-execution malware triage for scripts. Static analysis "
-                    "only — nothing is ever executed.")
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "VIGIL - pre-execution malware triage for scripts.\n\n"
+            "Answers one question fast: is this script safe to hand off, or\n"
+            "should it be escalated now? Analyzes .sh, .ps1, .py files and\n"
+            "archives of them in under 30 seconds, with no sandbox required.\n\n"
+            "Nothing is ever executed. Every operation is a pure text or byte\n"
+            "transform. VIGIL does not detonate; it tells you whether you\n"
+            "should.\n\n"
+            "Obfuscation is recursively unwrapped (base64, hex, ROT13, URL and\n"
+            "\\x escapes, gzip/zlib/bz2, PowerShell -EncodedCommand), and every\n"
+            "decoded layer is analyzed - so a C2 address three layers deep is\n"
+            "caught exactly like plaintext.\n\n"
+            "The verdict is computed locally by a deterministic scorer. The AI\n"
+            "layer, when enabled, only explains evidence already collected; it\n"
+            "never decides the verdict and cannot invent findings."),
+        epilog=(
+            "EXIT CODES\n"
+            "  0  no escalation needed        2  input/usage error\n"
+            "  1  escalate (or audit broken)  3  unexpected internal error\n"
+            "\n"
+            "EXAMPLES\n"
+            "  vigil scan suspicious.sh\n"
+            "      Local analysis with zero configuration.\n\n"
+            "  vigil scan bundle.tar.gz\n"
+            "      Archives are extracted safely (zip-slip and bomb limits).\n\n"
+            "  vigil scan payload.ps1 --json > report.json\n"
+            "      Machine-readable output for a SIEM or case system.\n\n"
+            "  vigil scan sample.sh --offline --audit-log ~/.vigil/audit.jsonl\n"
+            "      Zero network egress plus a tamper-evident audit trail.\n"
+            "      Use this for CUI, PHI, or any regulated data.\n\n"
+            "  vigil verify-audit ~/.vigil/audit.jsonl\n"
+            "      Confirm no audit record was altered, deleted, or reordered.\n\n"
+            "  vigil setup --keys\n"
+            "      Store optional API keys (never in config.yaml, never in the\n"
+            "      project directory).\n"
+            "\n"
+            "API KEYS ARE OPTIONAL\n"
+            "  VIGIL runs fully without any key. Keys add external\n"
+            "  corroboration (VirusTotal, AbuseIPDB) and AI-written prose.\n"
+            "  They never affect the verdict, which is always computed locally.\n"
+            "  Any key means network egress: use --offline for sensitive files.\n"
+            "\n"
+            "WHAT VIGIL CANNOT DO\n"
+            "  Runtime-built obfuscation, execution-time encryption keys,\n"
+            "  environment-dependent decoding, intent, and Windows PE binaries\n"
+            "  are out of scope. A SAFE verdict means no signals were found -\n"
+            "  not proof that a file is benign.\n"
+            "\n"
+            "Docs: README.md  THREAT_MODEL.md  COMPLIANCE.md  EVALUATION.md"))
     parser.add_argument("--version", action="version",
                         version=f"vigil {reporter.VIGIL_VERSION}")
-    sub = parser.add_subparsers(dest="command")
+    sub = parser.add_subparsers(dest="command", metavar="COMMAND")
 
     scan = sub.add_parser("scan", help="analyze a script or archive")
     scan.add_argument("path", help="path to the file to analyze")
@@ -513,6 +632,8 @@ def build_parser() -> argparse.ArgumentParser:
     va.set_defaults(func=_cmd_verify_audit)
 
     setup = sub.add_parser("setup", help="first-run setup: write a config template")
+    setup.add_argument("--keys", action="store_true",
+                       help="interactively enter and store API keys")
     setup.add_argument("--force", action="store_true",
                        help="overwrite an existing config")
     setup.set_defaults(func=_cmd_setup)

@@ -19,7 +19,9 @@ API_BASE = "https://www.virustotal.com/api/v3"
 
 
 def _api_key(explicit: Optional[str]) -> Optional[str]:
-    return explicit or os.environ.get("VT_API_KEY") or None
+    # Environment first, then the optional local store (see credentials.py).
+    from ..credentials import get as _cred
+    return explicit or _cred("VT_API_KEY") or None
 
 
 def lookup_hash(sha256: str, api_key: Optional[str] = None,
